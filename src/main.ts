@@ -8,6 +8,9 @@ interface UploadImageCfSettings {
   r2SecretAccessKey: string // X-R2-Secret-Access-Key
   r2Bucket: string // X-R2-Bucket
   baseUrl: string // X-Base-Url
+  timeoutMs: number // 请求超时（毫秒）
+  debug: boolean // 调试模式，输出更多日志与错误信息
+  includeContentLength: boolean // 是否显式发送 Content-Length
 }
 
 const DEFAULT_SETTINGS: UploadImageCfSettings = {
@@ -18,6 +21,9 @@ const DEFAULT_SETTINGS: UploadImageCfSettings = {
   r2SecretAccessKey: '',
   r2Bucket: '',
   baseUrl: '',
+  timeoutMs: 30000,
+  debug: false,
+  includeContentLength: false,
 }
 
 export default class UploadImageCloudflarePlugin extends Plugin {
@@ -65,6 +71,19 @@ export default class UploadImageCloudflarePlugin extends Plugin {
         this.settings.enabled = !this.settings.enabled
         await this.saveSettings()
         new Notice(this.settings.enabled ? '已开启自动上传' : '已关闭自动上传', 2500)
+      },
+    })
+
+    // 命令：测试服务器连通性
+    this.addCommand({
+      id: 'test-connectivity',
+      name: '测试服务器连通性',
+      callback: async () => {
+        try {
+          await this.pingServer()
+        } catch (e: any) {
+          new ErrorModal(this.app, '连通性测试失败', e?.message || String(e)).open()
+        }
       },
     })
   }
@@ -124,26 +143,39 @@ export default class UploadImageCloudflarePlugin extends Plugin {
     const ab = body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength)
 
     // 便于调试：打印 multipart 关键信息（不包含敏感内容）
-    console.info('[upload-image-cloudflare] multipart', { contentType, bytes: body.byteLength })
+    if (this.settings.debug) {
+      console.info('[upload-image-cloudflare] multipart', { contentType, bytes: body.byteLength })
+    }
+
+    const headers: Record<string, string> = {
+      'X-R2-Endpoint': this.settings.r2Endpoint || '',
+      'X-R2-Access-Key-Id': this.settings.r2AccessKeyId || '',
+      'X-R2-Secret-Access-Key': this.settings.r2SecretAccessKey || '',
+      'X-R2-Bucket': this.settings.r2Bucket || '',
+      'X-Base-Url': this.settings.baseUrl || '',
+    }
+    if (this.settings.includeContentLength) {
+      headers['Content-Length'] = String(body.byteLength)
+    }
 
     const res = await requestUrl({
       url: this.settings.serverUrl,
       method: 'POST',
       contentType, // 使用 requestUrl 的 contentType 字段设置 Content-Type
-      headers: {
-        'X-R2-Endpoint': this.settings.r2Endpoint || '',
-        'X-R2-Access-Key-Id': this.settings.r2AccessKeyId || '',
-        'X-R2-Secret-Access-Key': this.settings.r2SecretAccessKey || '',
-        'X-R2-Bucket': this.settings.r2Bucket || '',
-        'X-Base-Url': this.settings.baseUrl || '',
-        // 可选：某些后端需要明确 Content-Length
-        // 'Content-Length': String(body.byteLength),
-      },
+      headers,
       body: ab,
-      throw: true,
+      throw: false,
+      timeout: Math.max(1000, Number(this.settings.timeoutMs) || 30000),
     })
 
-    console.info('[upload-image-cloudflare] response', res.status)
+    if (this.settings.debug) {
+      console.info('[upload-image-cloudflare] response', res.status)
+    }
+
+    if (res.status >= 400) {
+      const snippet = (res.text || '').slice(0, 200)
+      throw new Error(`HTTP ${res.status}: ${snippet}`)
+    }
 
     let data: any = null
     try {
@@ -160,6 +192,22 @@ export default class UploadImageCloudflarePlugin extends Plugin {
       throw new Error('响应缺少 url 字段')
     }
     return data.url as string
+  }
+
+  private async pingServer(): Promise<void> {
+    if (!this.settings.serverUrl) {
+      throw new Error('请先在设置中填写上传服务器地址')
+    }
+    const url = this.settings.serverUrl
+    const timeout = Math.max(1000, Number(this.settings.timeoutMs) || 30000)
+    const start = Date.now()
+    const res = await headOrGet(url, timeout)
+    const ms = Date.now() - start
+    if (res.status >= 400) {
+      const snippet = (res.text || '').slice(0, 200)
+      throw new Error(`HTTP ${res.status} (${ms}ms): ${snippet}`)
+    }
+    new Notice(`连通性正常: ${res.status} (${ms}ms)`, 3000)
   }
 
   async loadSettings() {
@@ -247,6 +295,42 @@ class UploadImageCfSettingTab extends PluginSettingTab {
         await this.plugin.saveSettings()
       })
     )
+
+    containerEl.createEl('h3', { text: '网络与调试' })
+
+    new Setting(containerEl)
+      .setName('请求超时 (ms)')
+      .setDesc('默认 30000，移动端网络可适当加大')
+      .addText((text) =>
+        text
+          .setPlaceholder('30000')
+          .setValue(String(this.plugin.settings.timeoutMs ?? 30000))
+          .onChange(async (v) => {
+            const n = Number(v)
+            this.plugin.settings.timeoutMs = Number.isFinite(n) && n > 0 ? Math.floor(n) : 30000
+            await this.plugin.saveSettings()
+          })
+      )
+
+    new Setting(containerEl)
+      .setName('发送 Content-Length 头')
+      .setDesc('某些后端需要明确 Content-Length')
+      .addToggle((t) =>
+        t.setValue(this.plugin.settings.includeContentLength).onChange(async (v) => {
+          this.plugin.settings.includeContentLength = v
+          await this.plugin.saveSettings()
+        })
+      )
+
+    new Setting(containerEl)
+      .setName('调试模式')
+      .setDesc('输出更多日志并显示详细错误')
+      .addToggle((t) =>
+        t.setValue(this.plugin.settings.debug).onChange(async (v) => {
+          this.plugin.settings.debug = v
+          await this.plugin.saveSettings()
+        })
+      )
   }
 }
 
@@ -259,6 +343,16 @@ class ErrorModal extends Modal {
     titleEl.setText(this.titleText)
     contentEl.createEl('p', { text: this.message })
   }
+}
+
+// 连通性测试
+async function headOrGet(url: string, timeout: number) {
+  // HEAD 有些服务不支持，失败则回退 GET
+  let res = await requestUrl({ url, method: 'HEAD', throw: false, timeout })
+  if (res.status === 405 || res.status === 501) {
+    res = await requestUrl({ url, method: 'GET', throw: false, timeout })
+  }
+  return res
 }
 
 function escapeQuotes(s: string) {

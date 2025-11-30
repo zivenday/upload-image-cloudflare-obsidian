@@ -31,7 +31,10 @@ var DEFAULT_SETTINGS = {
   r2AccessKeyId: "",
   r2SecretAccessKey: "",
   r2Bucket: "",
-  baseUrl: ""
+  baseUrl: "",
+  timeoutMs: 3e4,
+  debug: false,
+  includeContentLength: false
 };
 var UploadImageCloudflarePlugin = class extends import_obsidian.Plugin {
   constructor() {
@@ -72,6 +75,17 @@ var UploadImageCloudflarePlugin = class extends import_obsidian.Plugin {
         this.settings.enabled = !this.settings.enabled;
         await this.saveSettings();
         new import_obsidian.Notice(this.settings.enabled ? "\u5DF2\u5F00\u542F\u81EA\u52A8\u4E0A\u4F20" : "\u5DF2\u5173\u95ED\u81EA\u52A8\u4E0A\u4F20", 2500);
+      }
+    });
+    this.addCommand({
+      id: "test-connectivity",
+      name: "\u6D4B\u8BD5\u670D\u52A1\u5668\u8FDE\u901A\u6027",
+      callback: async () => {
+        try {
+          await this.pingServer();
+        } catch (e) {
+          new ErrorModal(this.app, "\u8FDE\u901A\u6027\u6D4B\u8BD5\u5931\u8D25", (e == null ? void 0 : e.message) || String(e)).open();
+        }
       }
     });
   }
@@ -119,25 +133,35 @@ var UploadImageCloudflarePlugin = class extends import_obsidian.Plugin {
       data: await file.arrayBuffer()
     });
     const ab = body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength);
-    console.info("[upload-image-cloudflare] multipart", { contentType, bytes: body.byteLength });
+    if (this.settings.debug) {
+      console.info("[upload-image-cloudflare] multipart", { contentType, bytes: body.byteLength });
+    }
+    const headers = {
+      "X-R2-Endpoint": this.settings.r2Endpoint || "",
+      "X-R2-Access-Key-Id": this.settings.r2AccessKeyId || "",
+      "X-R2-Secret-Access-Key": this.settings.r2SecretAccessKey || "",
+      "X-R2-Bucket": this.settings.r2Bucket || "",
+      "X-Base-Url": this.settings.baseUrl || ""
+    };
+    if (this.settings.includeContentLength) {
+      headers["Content-Length"] = String(body.byteLength);
+    }
     const res = await (0, import_obsidian.requestUrl)({
       url: this.settings.serverUrl,
       method: "POST",
       contentType,
-      // 使用 requestUrl 的 contentType 字段设置 Content-Type
-      headers: {
-        "X-R2-Endpoint": this.settings.r2Endpoint || "",
-        "X-R2-Access-Key-Id": this.settings.r2AccessKeyId || "",
-        "X-R2-Secret-Access-Key": this.settings.r2SecretAccessKey || "",
-        "X-R2-Bucket": this.settings.r2Bucket || "",
-        "X-Base-Url": this.settings.baseUrl || ""
-        // 可选：某些后端需要明确 Content-Length
-        // 'Content-Length': String(body.byteLength),
-      },
+      headers,
       body: ab,
-      throw: true
+      throw: false,
+      timeout: Math.max(1e3, Number(this.settings.timeoutMs) || 3e4)
     });
-    console.info("[upload-image-cloudflare] response", res.status);
+    if (this.settings.debug) {
+      console.info("[upload-image-cloudflare] response", res.status);
+    }
+    if (res.status >= 400) {
+      const snippet = (res.text || "").slice(0, 200);
+      throw new Error(`HTTP ${res.status}: ${snippet}`);
+    }
     let data = null;
     try {
       data = JSON.parse(res.text);
@@ -152,6 +176,24 @@ var UploadImageCloudflarePlugin = class extends import_obsidian.Plugin {
       throw new Error("\u54CD\u5E94\u7F3A\u5C11 url \u5B57\u6BB5");
     }
     return data.url;
+  }
+  async pingServer() {
+    if (!this.settings.serverUrl) {
+      throw new Error("\u8BF7\u5148\u5728\u8BBE\u7F6E\u4E2D\u586B\u5199\u4E0A\u4F20\u670D\u52A1\u5668\u5730\u5740");
+    }
+    const url = this.settings.serverUrl;
+    const timeout = Math.max(1e3, Number(this.settings.timeoutMs) || 3e4);
+    const start = Date.now();
+    let res = await (0, import_obsidian.requestUrl)({ url, method: "HEAD", throw: false, timeout });
+    if (res.status === 405 || res.status === 501) {
+      res = await (0, import_obsidian.requestUrl)({ url, method: "GET", throw: false, timeout });
+    }
+    const ms = Date.now() - start;
+    if (res.status >= 400) {
+      const snippet = (res.text || "").slice(0, 200);
+      throw new Error(`HTTP ${res.status} (${ms}ms): ${snippet}`);
+    }
+    new import_obsidian.Notice(`\u8FDE\u901A\u6027\u6B63\u5E38: ${res.status} (${ms}ms)`, 3e3);
   }
   async loadSettings() {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
@@ -213,6 +255,26 @@ var UploadImageCfSettingTab = class extends import_obsidian.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
+    containerEl.createEl("h3", { text: "\u7F51\u7EDC\u4E0E\u8C03\u8BD5" });
+    new import_obsidian.Setting(containerEl).setName("\u8BF7\u6C42\u8D85\u65F6 (ms)").setDesc("\u9ED8\u8BA4 30000\uFF0C\u79FB\u52A8\u7AEF\u7F51\u7EDC\u53EF\u9002\u5F53\u52A0\u5927").addText(
+      (text) => text.setPlaceholder("30000").setValue(String(this.plugin.settings.timeoutMs ?? 3e4)).onChange(async (v) => {
+        const n = Number(v);
+        this.plugin.settings.timeoutMs = Number.isFinite(n) && n > 0 ? Math.floor(n) : 3e4;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian.Setting(containerEl).setName("\u53D1\u9001 Content-Length \u5934").setDesc("\u67D0\u4E9B\u540E\u7AEF\u9700\u8981\u660E\u786E Content-Length").addToggle(
+      (t) => t.setValue(this.plugin.settings.includeContentLength).onChange(async (v) => {
+        this.plugin.settings.includeContentLength = v;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian.Setting(containerEl).setName("\u8C03\u8BD5\u6A21\u5F0F").setDesc("\u8F93\u51FA\u66F4\u591A\u65E5\u5FD7\u5E76\u663E\u793A\u8BE6\u7EC6\u9519\u8BEF").addToggle(
+      (t) => t.setValue(this.plugin.settings.debug).onChange(async (v) => {
+        this.plugin.settings.debug = v;
+        await this.plugin.saveSettings();
+      })
+    );
   }
 };
 var ErrorModal = class extends import_obsidian.Modal {
@@ -227,6 +289,13 @@ var ErrorModal = class extends import_obsidian.Modal {
     contentEl.createEl("p", { text: this.message });
   }
 };
+async function headOrGet(url, timeout) {
+  let res = await (0, import_obsidian.requestUrl)({ url, method: "HEAD", throw: false, timeout });
+  if (res.status === 405 || res.status === 501) {
+    res = await (0, import_obsidian.requestUrl)({ url, method: "GET", throw: false, timeout });
+  }
+  return res;
+}
 function escapeQuotes(s) {
   return s.replace(/"/g, '\\"');
 }
