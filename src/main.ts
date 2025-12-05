@@ -137,7 +137,7 @@ export default class UploadImageCloudflarePlugin extends Plugin {
       fieldName: 'file',
       fileName: file.name || 'pasted-image',
       contentType: file.type || 'application/octet-stream',
-      data: file.arrayBuffer,
+      data: () => file.arrayBuffer(),
     })
 
     // 将 Uint8Array 安全转换为 ArrayBuffer（精确 slice）

@@ -5,7 +5,8 @@
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs --dev",
-    "build": "node esbuild.config.mjs"
+    "build": "node esbuild.config.mjs",
+    "test": "TARGET=\"/Users/zhongwei4/Documents/Obsidian Vault/.obsidian/plugins/upload-image-cloudflare-obsidian\"; mkdir -p \"$TARGET\" && cp -f main.js manifest.json styles.css versions.json \"$TARGET\" && echo \"Copied files to $TARGET\""
   },
   "keywords": ["obsidian", "plugin", "cloudflare", "r2", "image", "upload"],
   "author": "",
@@ -17,4 +18,3 @@
     "typescript": "^5.6.3"
   }
 }
-
