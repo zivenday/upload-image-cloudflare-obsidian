@@ -81,8 +81,9 @@ export default class UploadImageCloudflarePlugin extends Plugin {
       callback: async () => {
         try {
           await this.pingServer()
-        } catch (e: any) {
-          new ErrorModal(this.app, '连通性测试失败', e?.message || String(e)).open()
+        } catch (e) {
+          const message = e instanceof Error ? e.message : String(e)
+          new ErrorModal(this.app, '连通性测试失败', message).open()
         }
       },
     })
@@ -115,10 +116,10 @@ export default class UploadImageCloudflarePlugin extends Plugin {
       const finalMd = `![${file.name}](${url})`
       editor.replaceRange(finalMd, from, to)
       new Notice('图片上传成功', 2000)
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error(err)
       editor.replaceRange('', from, to) // 移除占位符
-      const message = err?.message || '上传失败'
+      const message = err instanceof Error ? err.message : '上传失败'
       new ErrorModal(this.app, '上传失败', message).open()
     } finally {
       this.uploadingCount -= 1
@@ -136,7 +137,7 @@ export default class UploadImageCloudflarePlugin extends Plugin {
       fieldName: 'file',
       fileName: file.name || 'pasted-image',
       contentType: file.type || 'application/octet-stream',
-      data: await file.arrayBuffer(),
+      data: file.arrayBuffer,
     })
 
     // 将 Uint8Array 安全转换为 ArrayBuffer（精确 slice）
@@ -144,7 +145,7 @@ export default class UploadImageCloudflarePlugin extends Plugin {
 
     // 便于调试：打印 multipart 关键信息（不包含敏感内容）
     if (this.settings.debug) {
-      console.info('[upload-image-cloudflare] multipart', { contentType, bytes: body.byteLength })
+      // console.info('[upload-image-cloudflare] multipart', { contentType, bytes: body.byteLength })
     }
 
     const headers: Record<string, string> = {
@@ -169,7 +170,7 @@ export default class UploadImageCloudflarePlugin extends Plugin {
     })
 
     if (this.settings.debug) {
-      console.info('[upload-image-cloudflare] response', res.status)
+      // console.info('[upload-image-cloudflare] response', res.status)
     }
 
     if (res.status >= 400) {
@@ -177,21 +178,37 @@ export default class UploadImageCloudflarePlugin extends Plugin {
       throw new Error(`HTTP ${res.status}: ${snippet}`)
     }
 
-    let data: any = null
+    let parsed: unknown
     try {
-      data = JSON.parse(res.text)
-    } catch (_) {
+      parsed = JSON.parse(res.text)
+    } catch {
       throw new Error('服务器返回非 JSON 响应')
     }
 
-    if (!data || data.ok !== true) {
-      const msg = data?.message || data?.error || '上传失败 (ok != true)'
-      throw new Error(String(msg))
+    if (!parsed || typeof parsed !== 'object') {
+      throw new Error('服务器返回格式不正确')
     }
-    if (!data.url || typeof data.url !== 'string') {
+
+    const data = parsed as {
+      ok?: unknown
+      url?: unknown
+      message?: unknown
+      error?: unknown
+    }
+
+    if (data.ok !== true) {
+      const msg =
+        typeof data.message === 'string'
+          ? data.message
+          : typeof data.error === 'string'
+          ? data.error
+          : '上传失败 (ok != true)'
+      throw new Error(msg)
+    }
+    if (typeof data.url !== 'string') {
       throw new Error('响应缺少 url 字段')
     }
-    return data.url as string
+    return data.url
   }
 
   private async pingServer(): Promise<void> {
@@ -230,7 +247,7 @@ class UploadImageCfSettingTab extends PluginSettingTab {
     const { containerEl } = this
     containerEl.empty()
 
-    containerEl.createEl('h2', { text: 'Cloudflare R2 图片上传' })
+    new Setting(containerEl).setName('Cloudflare r2 图片上传').setHeading()
 
     new Setting(containerEl)
       .setName('自动上传粘贴图片')
@@ -244,7 +261,7 @@ class UploadImageCfSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('上传服务器地址')
-      .setDesc('用于接收上传并转存到 R2 的服务 URL')
+      .setDesc('用于接收上传并转存到 r2 的服务 url')
       .addText((text) =>
         text
           .setPlaceholder('https://your-upload-server.example.com/upload')
@@ -255,7 +272,7 @@ class UploadImageCfSettingTab extends PluginSettingTab {
           })
       )
 
-    containerEl.createEl('h3', { text: 'R2 凭据与配置 (随请求头发送)' })
+    new Setting(containerEl).setName('R2 凭据与配置 (随请求头发送)').setHeading()
 
     new Setting(containerEl).setName('X-R2-Endpoint').addText((text) =>
       text
@@ -296,7 +313,7 @@ class UploadImageCfSettingTab extends PluginSettingTab {
       })
     )
 
-    containerEl.createEl('h3', { text: '网络与调试' })
+    new Setting(containerEl).setName('网络与调试').setHeading()
 
     new Setting(containerEl)
       .setName('请求超时 (ms)')
@@ -313,8 +330,8 @@ class UploadImageCfSettingTab extends PluginSettingTab {
       )
 
     new Setting(containerEl)
-      .setName('发送 Content-Length 头')
-      .setDesc('某些后端需要明确 Content-Length')
+      .setName('发送 content-length 头')
+      .setDesc('某些后端需要明确 content-length')
       .addToggle((t) =>
         t.setValue(this.plugin.settings.includeContentLength).onChange(async (v) => {
           this.plugin.settings.includeContentLength = v
@@ -363,7 +380,7 @@ async function buildMultipartBody(args: {
   fieldName: string
   fileName: string
   contentType: string
-  data: ArrayBuffer
+  data: () => Promise<ArrayBuffer>
 }): Promise<{ body: Uint8Array; contentType: string }> {
   const boundary = `----obsidian-r2-upload-${Math.random().toString(16).slice(2)}`
   const enc = new TextEncoder()
@@ -382,7 +399,8 @@ async function buildMultipartBody(args: {
   const tail = CRLF + `--${boundary}--` + CRLF
 
   const headBytes = enc.encode(head)
-  const dataBytes = new Uint8Array(args.data)
+  const dataBuffer = await args.data()
+  const dataBytes = new Uint8Array(dataBuffer)
   const tailBytes = enc.encode(tail)
 
   const merged = concatBytes(headBytes, dataBytes, tailBytes)
