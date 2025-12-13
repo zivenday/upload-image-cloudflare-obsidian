@@ -247,7 +247,7 @@ class UploadImageCfSettingTab extends PluginSettingTab {
     const { containerEl } = this
     containerEl.empty()
 
-    new Setting(containerEl).setName('Cloudflare r2 图片上传').setHeading()
+    new Setting(containerEl).setName('设置').setHeading()
 
     new Setting(containerEl)
       .setName('自动上传粘贴图片')
@@ -261,7 +261,7 @@ class UploadImageCfSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('上传服务器地址')
-      .setDesc('用于接收上传并转存到 r2 的服务 url')
+      .setDesc('用于接收上传并转存到服务路径地址')
       .addText((text) =>
         text
           .setPlaceholder('https://your-upload-server.example.com/upload')
@@ -330,8 +330,8 @@ class UploadImageCfSettingTab extends PluginSettingTab {
       )
 
     new Setting(containerEl)
-      .setName('发送 content-length 头')
-      .setDesc('某些后端需要明确 content-length')
+      .setName('发送实体长度头')
+      .setDesc('某些后端需要明确实体长度')
       .addToggle((t) =>
         t.setValue(this.plugin.settings.includeContentLength).onChange(async (v) => {
           this.plugin.settings.includeContentLength = v
